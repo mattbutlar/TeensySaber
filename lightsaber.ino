@@ -23,8 +23,8 @@
 
 // #define CONFIG_FILE "default_v3_config.h"
 // #define CONFIG_FILE "crossguard_config.h"
-#define CONFIG_FILE "graflex_v1_config.h"
-// #define CONFIG_FILE "owk_v2_config.h"
+// #define CONFIG_FILE "graflex_v1_config.h"
+#define CONFIG_FILE "owk_v2_config.h"
 // #define CONFIG_FILE "test_bench_config.h"
 // #define CONFIG_FILE "toy_saber_config.h"
 // #define CONFIG_FILE "new_config.h"
@@ -128,6 +128,16 @@
 #include <Wire.h>
 #include <FS.h>
 #define digitalWriteFast digitalWrite
+#include <stm32l4_wiring_private.h>
+#include <stm32l4xx.h>
+#include <armv7m.h>
+#include <stm32l4_gpio.h>
+#include <stm32l4_sai.h>
+#include <stm32l4_dma.h>
+#include <stm32l4_system.h>
+#define DMAChannel stm32l4_dma_t
+#define DMAMEM
+#define NVIC_SET_PRIORITY(X,Y) NVIC_SetPriority((X), (IRQn_Type)(Y))
 #endif
 
 #include <SPI.h>
@@ -619,6 +629,9 @@ public:
   Vec3 operator*(float f) const {
     return Vec3(x * f, y * f, z * f);
   }
+  Vec3 operator/(int i) const {
+    return Vec3(x / i, y / i, z / i);
+  }
   Vec3 dot(const Vec3& o) const {
     return Vec3(x * o.x, y * o.y, z * o.z);
   }
@@ -812,6 +825,10 @@ float clamp(float x, float a, float b) {
   if (x > b) return b;
   return x;
 }
+float fmod(float a, float b) {
+  return a - floor(a / b) * b;
+}
+
 int32_t clampi32(int32_t x, int32_t a, int32_t b) {
   if (x < a) return a;
   if (x > b) return b;
@@ -984,6 +1001,7 @@ public:
 
 #ifdef USE_I2S
 
+#ifdef TEENSYDUINO
 // MCLK needs to be 48e6 / 1088 * 256 = 11.29411765 MHz -> 44.117647 kHz sample rate
 //
 #if F_CPU == 96000000 || F_CPU == 48000000 || F_CPU == 24000000
@@ -1032,15 +1050,23 @@ public:
 #endif
 
 #define CHANNELS 2
+
+#else // TEENSYDUINO
+
+#define CHANNELS 1
+
+#endif
+
 #else   // USE_I2S
 #define CHANNELS 1
 #endif  // USE_I2S
 
 #define PDB_CONFIG (PDB_SC_TRGSEL(15) | PDB_SC_PDBEN | PDB_SC_CONT | PDB_SC_PDBIE | PDB_SC_DMAEN)
 
-class DAC : CommandParser {
+class LS_DAC : CommandParser {
 public:
-  DAC() {
+  LS_DAC() {
+#ifdef TEENSYDUINO
     dma.begin(true); // Allocate the DMA channel first
 
 #ifdef USE_I2S
@@ -1120,6 +1146,37 @@ public:
     dma.enable();
 #endif
     dma.attachInterrupt(isr);
+
+#else  // teensyduino
+    // check return value?
+    stm32l4_dma_create(&dma, DMA_CHANNEL_DMA2_CH6_SAI1_A, STM32L4_SAI_IRQ_PRIORITY);
+    // NVIC_SetPriority(sai->interrupt, sai->priority);
+    // NVIC_EnableIRQ(sai->interrupt);
+    SAI_Block_TypeDef *SAIx = SAI1_Block_A;
+    uint32_t sai_cr1 = (SAI_xCR1_DS_2);
+    uint32_t saiclk = SYSTEM_SAICLK_11289600;
+    sai_cr1 |= SAI_xCR1_CKSTR;
+    uint32_t sai_frcr = (31 << SAI_xFRCR_FRL_Pos) | (15 << SAI_xFRCR_FSALL_Pos) | SAI_xFRCR_FSDEF | SAI_xFRCR_FSOFF;
+    uint32_t sai_slotr = SAI_xSLOTR_NBSLOT_0 | (0x0003 << SAI_xSLOTR_SLOTEN_Pos) | SAI_xSLOTR_SLOTSZ_0;
+    stm32l4_system_periph_enable(SYSTEM_PERIPH_SAI1);
+    SAIx->CR1 = sai_cr1;
+    SAIx->FRCR = sai_frcr;
+    SAIx->SLOTR = sai_slotr;
+    stm32l4_system_saiclk_configure(saiclk);
+    stm32l4_gpio_pin_configure(bclkPin, (GPIO_PUPD_NONE | GPIO_OSPEED_HIGH | GPIO_OTYPE_PUSHPULL | GPIO_MODE_ALTERNATE));
+    stm32l4_gpio_pin_configure(txd0Pin, (GPIO_PUPD_NONE | GPIO_OSPEED_HIGH | GPIO_OTYPE_PUSHPULL | GPIO_MODE_ALTERNATE));
+    stm32l4_gpio_pin_configure(lrclkPin, (GPIO_PUPD_NONE | GPIO_OSPEED_HIGH | GPIO_OTYPE_PUSHPULL | GPIO_MODE_ALTERNATE));
+    stm32l4_dma_enable(&dma, &isr, 0);
+    stm32l4_dma_start(&dma, (uint32_t)&SAIx->DR, (uint32_t)dac_dma_buffer, AUDIO_BUFFER_SIZE * 2,
+                      DMA_OPTION_EVENT_TRANSFER_DONE |
+		      DMA_OPTION_EVENT_TRANSFER_HALF |
+		      DMA_OPTION_MEMORY_TO_PERIPHERAL |
+		      DMA_OPTION_PERIPHERAL_DATA_SIZE_32 |
+		      DMA_OPTION_MEMORY_DATA_SIZE_16 |
+		      DMA_OPTION_MEMORY_DATA_INCREMENT |
+		      DMA_OPTION_PRIORITY_HIGH |
+		      DMA_OPTION_CIRCULAR);
+#endif
   }
 
   bool Parse(const char* cmd, const char* arg) override {
@@ -1148,20 +1205,29 @@ public:
     STDOUT.println(" dacbuf - print the current contents of the dac buffer");
   }
 
-  void SetStream(AudioStream* stream) {
+  void SetStream(class AudioStream* stream) {
     stream_ = stream;
   }
 
 private:
   // Interrupt handler.
   // Fills the dma buffer with new sample data.
-  static void isr(void) {
+#ifdef TEENSYDUINO
+  static void isr(void)
+#else
+  static void isr(void* arg, unsigned long int event)
+#endif
+  {
     ScopedCycleCounter cc(audio_dma_interrupt_cycles);
     int16_t *dest, *end;
     uint32_t saddr;
 
+#ifdef TEENSYDUINO
     saddr = (uint32_t)(dma.TCD->SADDR);
     dma.clearInterrupt();
+#else
+    saddr = (uint32_t)(dac_dma_buffer + stm32l4_dma_count(&dma));
+#endif
     if (saddr < (uint32_t)dac_dma_buffer + sizeof(dac_dma_buffer) / 2) {
       // DMA is transmitting the first half of the buffer
       // so we must fill the second half
@@ -1182,8 +1248,10 @@ private:
     while (n < AUDIO_BUFFER_SIZE) data[n++] = 0;
     for (int i = 0; i < n; i++) {
 #ifdef USE_I2S
+#if CHANNELS == 2
       // Duplicate sample to left and right channel.
       *(dest++) = data[i];
+#endif      
       *(dest++) = data[i];
 #else
       *(dest++) = (((uint16_t*)data)[i] + 32768) >> 4;
@@ -1196,11 +1264,15 @@ private:
   static DMAChannel dma;
 };
 
-DMAChannel DAC::dma(false);
-AudioStream * volatile DAC::stream_ = nullptr;
-DMAMEM uint16_t DAC::dac_dma_buffer[AUDIO_BUFFER_SIZE*2*CHANNELS];
+#ifdef TEENSYDUINO
+DMAChannel LS_DAC::dma(false);
+#else
+DMAChannel LS_DAC::dma;
+#endif  
+AudioStream * volatile LS_DAC::stream_ = nullptr;
+DMAMEM uint16_t LS_DAC::dac_dma_buffer[AUDIO_BUFFER_SIZE*2*CHANNELS];
 
-DAC dac;
+LS_DAC dac;
 
 // Audio compressor, takes N input channels, sums them and divides the
 // result by the square root of the average volume.
@@ -1827,9 +1899,11 @@ public:
   AudioStreamWork() {
     next_ = data_streams;
     data_streams = this;
+#ifdef TEENSYDUINO
     NVIC_SET_PRIORITY(IRQ_WAV, 240);
     _VectorsRam[IRQ_WAV + 16] = &ProcessAudioStreams;
     NVIC_ENABLE_IRQ(IRQ_WAV);
+#endif    
   }
   ~AudioStreamWork() {
     for (AudioStreamWork** d = &data_streams; *d; d = &(*d)->next_) {
@@ -1840,8 +1914,12 @@ public:
   }
 
   static void scheduleFillBuffer() {
+#ifdef TEENSYDUINO
     if (!NVIC_IS_ACTIVE(IRQ_WAV))
       NVIC_TRIGGER_IRQ(IRQ_WAV);
+#else
+    armv7m_pendsv_enqueue((armv7m_pendsv_routine_t)ProcessAudioStreams, NULL, 0);
+#endif    
   }
 
   static void LockSD(bool locked) {
@@ -2186,6 +2264,7 @@ class Effect {
     unnumbered_file_found_ = false;
     subdirs_ = false;
     ext_ = UNKNOWN;
+    selected_ = -1;
   }
 
   void Scan(const char *filename) {
@@ -2262,6 +2341,9 @@ class Effect {
     return ret;
   }
 
+  void Select(int n) {
+    selected_ = n;
+  }
 
   bool Play(char *filename) {
     int num_files = files_found();
@@ -2271,6 +2353,7 @@ class Effect {
       return false; 
     }
     int n = rand() % num_files;
+    if (selected_ != -1) n = selected_;
     strcpy(filename, current_directory);
     strcat(filename, name_);
     if (subdirs_) {
@@ -2413,6 +2496,9 @@ private:
   // All files must start with this prefix.
   const char* name_;
 
+  // If not -1, return this file.
+  int selected_;
+
   // All files must end with this extension.
   Extension ext_;
 };
@@ -2444,7 +2530,7 @@ EFFECT(lock);
 EFFECT(swng);
 EFFECT(slsh);
 
-// Looped swing fonts.
+// Looped swing fonts. (SmoothSwing V1/V2)
 EFFECT(swingl);  // Looped swing, LOW
 EFFECT(swingh);  // Looped swing, HIGH
 
@@ -2523,8 +2609,9 @@ public:
     return filename_;
   }
 
-  void PlayOnce(Effect* effect) {
+  void PlayOnce(Effect* effect, float start = 0.0) {
     if (effect->Play(filename_)) {
+      start_ = start;
       effect_ = nullptr;
       run_ = true;
     }
@@ -2553,17 +2640,19 @@ private:
   DOWNSAMPLE_FUNC(Emit05, Emit1);
 
   uint32_t header(int n) const {
-    return ((uint32_t *)buffer)[n];
+    return ((uint32_t *)buffer)[n+2];
   }
 
   template<int bits> int16_t read2() {
     if (bits == 8) return *(ptr_++) << 8;
+    ptr_ += bits / 8 - 2;
     return *((*((int16_t**)&ptr_))++);
   }
 
   template<int bits, int channels, int rate>
   void DecodeBytes4() {
-    while (ptr_ < end_ && num_samples_ < (int)NELEM(samples_)) {
+    while (ptr_ < end_ - channels * bits / 8 &&
+	   num_samples_ < (int)NELEM(samples_)) {
       int v = 0;
       if (channels == 1) {
         v = read2<bits>();
@@ -2605,17 +2694,19 @@ private:
 
   void DecodeBytes() {
     if (bits_ == 8) DecodeBytes2<8>();
-    else DecodeBytes2<16>();
+    else if (bits_ == 16) DecodeBytes2<16>();
+    else if (bits_ == 24) DecodeBytes2<24>();
+    else if (bits_ == 32) DecodeBytes2<32>();
   }
 
   int ReadFile(int n) {
 #ifdef ENABLE_SERIALFLASH
     if (sf_file_) {
-      return sf_file_.read(buffer, n);
+      return sf_file_.read(buffer + 8, n);
     }
 #endif
 #ifdef ENABLE_SD
-    return sd_file_.read(buffer, n);
+    return sd_file_.read(buffer + 8, n);
 #else
     return 0;
 #endif
@@ -2696,23 +2787,40 @@ private:
       }
       wav_ = endswith(".wav", filename_);
       if (wav_) {
-        if (ReadFile(20) != 20) {
-          STDOUT.println("Failed to read 20 bytes.");
+        if (ReadFile(12) != 12) {
+          STDOUT.println("Failed to read 12 bytes.");
           goto fail;
         }
-        if (header(0) != 0x46464952 &&
-            header(2) != 0x45564157 &&
-            header(3) != 0x20746D66 &&
-            header(4) < 16) {
-          STDOUT.println("Headers don't match.");
+        if (header(0) != 0x46464952 || header(2) != 0x45564157) {
+          STDOUT.println("Not RIFF WAVE.");
           YIELD();
           goto fail;
-        }
-        tmp_ = header(4);
-        if (tmp_ != ReadFile(tmp_)) {
+	}
+
+	// Look for FMT header.
+	while (true) {
+	  if (ReadFile(8) != 8) {
+	    STDOUT.println("Failed to read 8 bytes.");
+	    goto fail;
+	  }
+
+	  len_ = header(1);
+	  if (header(0) != 0x20746D66) {  // 'fmt '
+	    Skip(len_);
+	    continue;
+	  }
+	  if (len_ < 16) {
+	    STDOUT.println("FMT header is wrong size..");
+	    goto fail;
+	  }
+	  break;
+	}
+	
+        if (16 != ReadFile(16)) {
           STDOUT.println("Read failed.");
           goto fail;
         }
+	if (len_ > 16) Skip(len_ - 16);
         if ((header(0) & 0xffff) != 1) {
           STDOUT.println("Wrong format.");
           goto fail;
@@ -2732,6 +2840,9 @@ private:
       STDOUT.print(" bits: ");
       STDOUT.println(bits_);
 
+      ptr_ = buffer + 8;
+      end_ = buffer + 8;
+      
       while (true) {
         if (wav_) {
           if (ReadFile(8) != 8) break;
@@ -2745,15 +2856,24 @@ private:
           len_ = FileSize() - Tell();
         }
         sample_bytes_ = len_;
+
+        if (start_ != 0.0) {
+	  int samples = fmod(start_, length()) * rate_;
+	  int bytes_to_skip = samples * channels_ * bits_ / 8;
+	  Skip(bytes_to_skip);
+	  len_ -= bytes_to_skip;
+	  start_ = 0.0;
+	}
+
         while (len_) {
-          bytes_to_decode_ =
-            ReadFile(AlignRead(min(len_, sizeof(buffer))));
-          if (bytes_to_decode_ == 0)
-            break;
-          len_ -= bytes_to_decode_;
-          ptr_ = buffer;
-          end_ = buffer + bytes_to_decode_;
-          while (ptr_ < end_) {
+	  {
+	    int bytes_read = ReadFile(AlignRead(min(len_, 512u)));
+	    if (bytes_read == 0)
+	      break;
+	    len_ -= bytes_read;
+	    end_ = buffer + 8 + bytes_read;
+	  }
+          while (ptr_ < end_ - channels_ * bits_ / 8) {
             DecodeBytes();
 
             while (written_ < num_samples_) {
@@ -2768,6 +2888,12 @@ private:
             }
             written_ = num_samples_ = 0;
           }
+	  if (ptr_ < end_) {
+	    memmove(buffer + 8 - (end_ - ptr_),
+		    ptr_,
+		    end_ - ptr_);
+	  }
+	  ptr_ = buffer + 8 - (end_ - ptr_);
         }
         YIELD();
       }
@@ -2815,6 +2941,7 @@ private:
   int16_t* dest_ = nullptr;
   int to_read_ = 0;
   int tmp_;
+  float start_ = 0.0;
 
   int rate_;
   uint8_t channels_;
@@ -2822,12 +2949,11 @@ private:
 
   bool wav_;
 
-  int bytes_to_decode_ = 0;
   size_t len_ = 0;
   volatile size_t sample_bytes_ = 0;
-  char* ptr_;
-  char* end_;
-  char buffer[512]  __attribute__((aligned(4)));
+  unsigned char* ptr_;
+  unsigned char* end_;
+  unsigned char buffer[512 + 8]  __attribute__((aligned(4)));
 
   // Number of samples_ in samples that has been
   // sent out already.
@@ -2932,7 +3058,7 @@ public:
     pause_ = false;
   }
 
-  void PlayOnce(Effect* effect) {
+  void PlayOnce(Effect* effect, float start = 0.0) {
     STDOUT.print("unit = ");
     STDOUT.print(WhatUnit(this));
     STDOUT.print(" vol = ");
@@ -2941,7 +3067,7 @@ public:
 
     pause_ = true;
     clear();
-    wav.PlayOnce(effect);
+    wav.PlayOnce(effect, start);
     SetStream(&wav);
     scheduleFillBuffer();
     pause_ = false;
@@ -3239,7 +3365,7 @@ struct ConfigFile {
     while (f->available() && f->read() != '\n');
   }
 
-  int64_t readValue(File* f) {
+  int64_t readIntValue(File* f) {
     int64_t ret = 0;
     int64_t sign = 1;
     if (f->peek() == '-') {
@@ -3258,7 +3384,39 @@ struct ConfigFile {
     return ret * sign;
   }
 
+  int64_t readFloatValue(File* f) {
+    float ret = 0.0;
+    float sign = 1.0;
+    float mult = 1.0;
+    bool decimals = false;
+    if (f->peek() == '-') {
+      sign = -1.0;
+      f->read();
+    }
+    while (f->available()) {
+      int c = toLower(f->peek());
+      if (c >= '0' && c <= '9') {
+	if (decimals) {
+	  ret += (c - '0') * mult;
+	  mult /= 10;
+	} else {
+          ret = (c - '0') + 10 * ret;
+	}
+        f->read();
+      } else if (c == '.') {
+	if (decimals) return ret * sign;
+	// Time to read decimals.
+	decimals = true;
+	f->read();
+      } else {
+        return ret * sign;
+      }
+    }
+    return ret * sign;
+  }
+
   void Read(File* f) {
+    SetVariable("=", 0.0);  // This resets all variables.
     for (; f->available(); skipline(f)) {
       char variable[33];
       variable[0] = 0;
@@ -3278,22 +3436,18 @@ struct ConfigFile {
       if (f->peek() != '=') continue;
       f->read();
       skipwhite(f);
-      int64_t v = readValue(f);
+      float v = readFloatValue(f);
 #if 0
       STDOUT.print(variable);
       STDOUT.print(" = ");
-      STDOUT.println((int)v);
+      STDOUT.println(v);
 #endif
-      if (!strcmp(variable, "humstart")) {
-        humStart = v;
-      } else if (!strcmp(variable, "volhum")) {
-        volHum = v;
-      } else if (!strcmp(variable, "voleff")) {
-        volEff = v;
-      }
+
+      SetVariable(variable, v);
     }
   }
 #endif
+  virtual void SetVariable(const char* variable, float v) = 0;
 
   void Read(const char *filename) {
 #ifdef ENABLE_SD
@@ -3303,11 +3457,38 @@ struct ConfigFile {
 #endif
   }
 
-  int humStart = 100;
-  int volHum = 15;
-  int volEff = 16;
+  void ReadInCurrentDir(const char* name) {
+    char full_name[128];
+    strcpy(full_name, current_directory);
+    strcat(full_name, name);
+    Read(full_name);
+  }
 };
 
+class IgniterConfigFile : public ConfigFile {
+public:
+#define CONFIG_VARIABLE(X, DEF) do {		\
+    if (variable[0] == '=') X = DEF;		\
+    else if (!strcasecmp(variable, #X)) {	\
+      X = v;					\
+      STDOUT.print(variable);			\
+      STDOUT.print("=");			\
+      STDOUT.println(v);			\
+      return;					\
+    }						\
+} while(0)
+	
+  void SetVariable(const char* variable, float v) override {
+    CONFIG_VARIABLE(humStart, 100);
+    CONFIG_VARIABLE(volHum, 15);
+    CONFIG_VARIABLE(volEff, 16);
+  }
+  int humStart;
+  int volHum;
+  int volEff;
+};
+
+  
 // With polyphonic fonts, sounds are played more or less
 // independently. Hum is faded in/out by changing the volume
 // and all other sound effects are just played in parallel
@@ -3319,10 +3500,7 @@ public:
     STDOUT.println("Activating polyphonic font.");
     SetupStandardAudio();
     wav_players[0].set_volume_now(0);
-    char config_filename[128];
-    strcpy(config_filename, current_directory);
-    strcat(config_filename, "config.ini");
-    config_.Read(config_filename);
+    config_.ReadInCurrentDir("config.ini");
     SaberBase::Link(this);
     state_ = STATE_OFF;
     lock_player_ = NULL;
@@ -3345,13 +3523,9 @@ public:
       BufferedWavPlayer* tmp = Play(&out);
       if (tmp) {
         int delay_ms = 1000 * tmp->length() - config_.humStart;
-#if 0   
-        STDOUT.print("LEN: ");
-        STDOUT.println(tmp->length());
-        STDOUT.print("DELAY: ");
-        STDOUT.println(delay_ms);
-#endif  
-        hum_start_ += delay_ms;
+        if (delay_ms > 0 && delay_ms < 30000) {
+          hum_start_ += delay_ms;
+        }
       }
     }
   }
@@ -3405,6 +3579,7 @@ public:
   uint32_t last_micros_;
 
   void SetHumVolume(float vol) override {
+    uint32_t m = micros();
     switch (state_) {
       case STATE_OFF:
         volume_ = 0.0f;
@@ -3413,13 +3588,11 @@ public:
         volume_ = 0.0f;
         if (millis() - hum_start_ < 0x7fffffffUL) {
           state_ = STATE_HUM_FADE_IN;
-          last_micros_ = micros();
         }
         break;
       case STATE_HUM_FADE_IN: {
-        uint32_t m = micros();
         uint32_t delta = m - last_micros_;
-        volume_ += (delta / 1000000.0) * 0.3; // 0.3 seconds
+        volume_ += (delta / 1000000.0) / 0.2; // 0.2 seconds
         if (volume_ >= 1.0f) {
           volume_ = 1.0f;
           state_ = STATE_HUM_ON;
@@ -3427,12 +3600,10 @@ public:
         break;
       }
       case STATE_HUM_ON:
-        last_micros_ = micros();
         break;
       case STATE_HUM_FADE_OUT: {
-        uint32_t m = micros();
         uint32_t delta = m - last_micros_;
-        volume_ -= (delta / 1000000.0) * 0.3; // 0.3 seconds
+        volume_ -= (delta / 1000000.0) / 0.2; // 0.2 seconds
         if (volume_ <= 0.0f) {
           volume_ = 0.0f;
           state_ = STATE_OFF;
@@ -3440,6 +3611,7 @@ public:
         break;
       }
     }
+    last_micros_ = m;
     wav_players[0].set_volume(vol * volume_);
   }
   
@@ -3460,7 +3632,7 @@ public:
     SetHumVolume(vol);
   }
 
-  ConfigFile config_;
+  IgniterConfigFile config_;
   State state_;
   float volume_;
 };
@@ -3477,7 +3649,30 @@ public:
   }
 };
 
+class SmoothSwingConfigFile : public ConfigFile {
+public:
+  void SetVariable(const char* variable, float v) override {
+    CONFIG_VARIABLE(Version, 1);
+    CONFIG_VARIABLE(SwingSensitivity, 360.0);
+    CONFIG_VARIABLE(MaximumHumDucking, 75.0);
+    CONFIG_VARIABLE(SwingSharpness, 1.75);
+    CONFIG_VARIABLE(SwingStrengthThreshold, 10.0);
+    CONFIG_VARIABLE(Transition1Degrees, 45.0);
+    CONFIG_VARIABLE(Transition2Degrees, 160.0);
+  };
 
+  int  Version;
+  float SwingSensitivity;
+  float MaximumHumDucking;
+  float SwingSharpness;
+  float SwingStrengthThreshold;
+  float Transition1Degrees;
+  float Transition2Degrees;
+};
+
+SmoothSwingConfigFile smooth_swing_config_file;
+
+// SmoothSwing V1
 // Looped swing sounds is a new way to play swing sounds.
 // Basically, two swing sounds (swingl and swingh) are always
 // playing in the background, but with zero volume. When
@@ -3578,6 +3773,206 @@ public:
 };
 
 LoopedSwingWrapper looped_swing_wrapper;
+
+template<class T, int N>
+class BoxFilter {
+public:
+  void add(const T& v) {
+    data[pos] = v;
+    pos++;
+    if (pos == N) pos = 0;
+  }
+  T get() const {
+    T ret = data[0];
+    for (int i = 1; i < N; i++) {
+      ret += data[i];
+    }
+    return ret / N;
+  }
+  T data[N];
+  int pos = 0;
+};
+
+// SmoothSwing V2, based on Thexter's excellent work.
+// For more details, see:
+// http://therebelarmory.com/thread/9138/smoothswing-v2-algorithm-description
+//
+class SmoothSwingV2 : public SaberBasePassThrough {
+public:
+  SmoothSwingV2() : SaberBasePassThrough() {}
+
+  void Activate(SaberBase* base_font) {
+    STDOUT.println("Activating SmoothSwing V2");
+    SetDelegate(base_font);
+    if (swingl.files_found() != swingh.files_found()) {
+      STDOUT.println("Warning, swingl and swingh should have the same number of files.");
+    }
+    swings_ = min(swingl.files_found(), swingh.files_found());
+  }
+
+  void Deactivate() {
+    SetDelegate(NULL);
+  }
+
+  // Should only be done when the volume is near zero.
+  void PickRandomSwing() {
+    int swing = random(swings_);
+    float start = millis() / 1000.0;
+    A.Stop();
+    B.Stop();
+    swingl.Select(swing);
+    swingh.Select(swing);
+    A.set_volume(0.0);
+    B.set_volume(0.0);
+    A.Play(&swingl, start);
+    B.Play(&swingh, start);
+    if (random(2)) std::swap(A, B);
+    float t1_offset = random(1000) / 1000.0 * 50 + 10;
+    A.SetTransition(t1_offset, smooth_swing_config_file.Transition1Degrees);
+    B.SetTransition(t1_offset + 180.0,
+      smooth_swing_config_file.Transition2Degrees);
+  }
+
+  void SB_On() override {
+    // Starts hum, etc.
+    delegate_->SB_On();
+    A.player = GetFreeWavPlayer();
+    B.player = GetFreeWavPlayer();
+    if (!A.player || !B.player) {
+      STDOUT.println("SmoothSwing V2 cannot allocate wav player.");
+    }
+    PickRandomSwing();
+  }
+  void SB_Off() override {
+    A.Off();
+    B.Off();
+    delegate_->SB_Off();
+  }
+
+  enum class SwingState {
+    OFF, // waiting for swing to start
+    ON,  // swinging
+    OUT, // Waiting for sound to fade out
+  };
+
+  void SB_Motion(const Vec3& gyro) override {
+    // degrees per second
+    // May not need to smooth gyro since volume is smoothed.
+    float speed = sqrt(gyro.z * gyro.z + gyro.y * gyro.y);
+    uint32_t t = micros();
+    uint32_t delta = t - last_micros_;
+    if (delta > 1000000) delta = 1;
+    last_micros_ = t;
+    float hum_volume = 1.0;
+    
+    switch (state_) {
+      case SwingState::OFF:
+	if (speed < smooth_swing_config_file.SwingStrengthThreshold) break;
+	state_ = SwingState::ON;
+	
+      case SwingState::ON:
+	if (speed >= smooth_swing_config_file.SwingStrengthThreshold * 0.9) {
+	  float swing_strength =
+	    min(1.0, speed / smooth_swing_config_file.SwingSensitivity);
+	  A.rotate(-speed * delta / 1000000.0);
+	  // If the current transition is done, switch A & B,
+	  // and set the next transition to be 180 degrees from the one
+	  // that is done.
+	  while (A.end() < 0.0) {
+	    B.midpoint = A.midpoint + 180.0;
+	    std::swap(A, B);
+	  }
+	  float mixab = 0.0;
+	  if (A.begin() < 0.0)
+	    mixab = clamp(- A.begin() / A.width, 0.0, 1.0);
+
+	  float mixhum =
+	    pow(swing_strength, smooth_swing_config_file.SwingSharpness);
+
+	  hum_volume =
+	    1.0 - mixhum * smooth_swing_config_file.MaximumHumDucking / 100.0;
+
+	  if (monitor.ShouldPrint(Monitoring::MonitorSwings)) {
+	    STDOUT.print("speed: ");
+	    STDOUT.print(speed);
+	    STDOUT.print(" R: ");
+	    STDOUT.print(-speed * delta / 1000000.0);
+	    STDOUT.print(" MP: ");
+	    STDOUT.print(A.midpoint);
+	    STDOUT.print("  mixhum: ");
+	    STDOUT.print(mixhum);
+	    STDOUT.print("  mixab: ");
+	    STDOUT.print(mixab);
+	    STDOUT.print("  hum_volume: ");
+	    STDOUT.println(hum_volume);
+	  }
+	  A.set_volume(mixhum * mixab);
+	  B.set_volume(mixhum * (1.0 - mixab));
+	  break;
+	}
+	A.set_volume(0);
+	B.set_volume(0);
+	state_ = SwingState::OUT;
+
+      case SwingState::OUT:
+	if (!A.isOff() || !B.isOff()) {
+	  if (monitor.ShouldPrint(Monitoring::MonitorSwings)) {
+	    Serial.println("Waiting for volume = 0");
+	  }
+	}
+	PickRandomSwing();
+	state_ = SwingState::OFF;
+    }
+    // Must always set hum volume, or fade-out doesn't work.
+    delegate_->SetHumVolume(hum_volume);
+  }
+
+private:
+  struct Data {
+    void set_volume(float v) {
+      if (player) player->set_volume(v);
+    }
+    void Play(Effect* effect, float start = 0.0) {
+      if (!player) return;
+      player->PlayOnce(effect, start);
+      player->PlayLoop(effect);
+    }
+    void Off() {
+      if (!player) return;
+      player->set_fade_time(0.2);  // Read from config file?
+      player->FadeAndStop();
+      player = NULL;
+    }
+    void Stop() {
+      if (!player) return;
+      player->Stop();
+    }
+    bool isOff() {
+      if (!player) return true;
+      return player->isOff();
+    }
+    void SetTransition(float mp, float w) {
+      midpoint = mp;
+      width = w;
+    }
+    float begin() const { return midpoint - width / 2; }
+    float end() const { return midpoint + width / 2; }
+    void rotate(float degrees) {
+      midpoint += degrees;
+    }
+    BufferedWavPlayer *player = nullptr;
+    float midpoint;
+    float width;
+  };
+  Data A;
+  Data B;
+
+  int swings_;
+  uint32_t last_micros_;
+  SwingState state_ = SwingState::OFF;;
+};
+
+SmoothSwingV2 smooth_swing_v2;
 
 #endif  // ENABLE_AUDIO
 
@@ -3767,9 +4162,6 @@ class Color16 {
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
     THE SOFTWARE.
 */
-
-#include <Arduino.h>
-#include "DMAChannel.h"
 
 #if TEENSYDUINO < 121
 #error "Teensyduino version 1.21 or later is required to compile this library."
@@ -4448,8 +4840,8 @@ public:
          config.intensity_rand = 0;
       }
       // Note heat_[0] is tip of blade
-      for (int i = 1; i <= speed_; i++) {
-         heat_[num_leds - i] += config.intensity_base +
+      for (int i = 0; i < speed_; i++) {
+         heat_[num_leds + i] = config.intensity_base +
            random(random(random(config.intensity_rand)));
       }
       for (int i = 0; i < num_leds; i++) {
@@ -4732,19 +5124,33 @@ public:
 // A section of the ring is lit at the specified color
 // and rotates at the specified speed. The size of the
 // lit up section is defined by "percentage".
-template<class COLOR, int percentage, int rpm>
+template<class COLOR, int percentage, int rpm,
+         class ON_COLOR = COLOR,
+	 int on_percentage = percentage,
+	 int on_rpm = rpm,
+	 int fade_time_millis = 1>
 class ColorCycle {
 public:
   void run(BladeBase* base) {
     c_.run(base);
+    on_c_.run(base);
 
     uint32_t now = micros();
     uint32_t delta = now - last_micros_;
     last_micros_ = now;
-    pos_ = fract(pos_ + delta / 60000000.0 * rpm);
+
+    float fade_delta = delta / 1000.0 / fade_time_millis;
+    if (!base->is_on()) fade_delta = - fade_delta;
+    fade_ = max(0.0, min(1.0, fade_ + fade_delta));
+
+    float current_rpm = rpm * (1 - fade_) + on_rpm * fade_;
+    float current_percentage =
+       percentage * (1 - fade_) + on_percentage * fade_;
+    fade_int_ = (int)(16384 * fade_);
+    pos_ = fract(pos_ + delta / 60000000.0 * current_rpm);
     num_leds_ = base->num_leds() * 16384;
     start_ = pos_ * num_leds_;
-    end_ = fract(pos_ + percentage / 100.0) * num_leds_;
+    end_ = fract(pos_ + current_percentage / 100.0) * num_leds_;
   }
   OverDriveColor getColor(int led) {
     led *= 16384;
@@ -4756,16 +5162,83 @@ public:
       black_mix = (Range(0, end_) & led_range).size() +
                   (Range(start_, num_leds_) & led_range).size();
     }
-    OverDriveColor ret = c_.getColor(led);
-    ret.c = Color16().mix2(ret.c, black_mix);
-    return ret;
+    OverDriveColor c = c_.getColor(led);
+    OverDriveColor on_c = on_c_.getColor(led);
+    c.c = c.c.mix2(on_c.c, fade_int_);
+    c.c = Color16().mix2(c.c, black_mix);
+    return c;
   }
 private:
-  float pos_;
+  float fade_ = 0.0;
+  int fade_int_;
+  float pos_ = 0.0;
   uint32_t start_;
   uint32_t end_;
   uint32_t num_leds_;
   COLOR c_;
+  ON_COLOR on_c_;
+  uint32_t last_micros_;
+};
+
+// Cylon/Knight Rider effect, a section of the strip is
+// lit up and moves back and forth. Speed, color and fraction
+// illuminated can be configured separately for on and off
+// states.
+template<class COLOR, int percentage, int rpm,
+         class ON_COLOR = COLOR,
+	 int on_percentage = percentage,
+	 int on_rpm = rpm,
+	 int fade_time_millis = 1>
+class Cylon {
+public:
+  void run(BladeBase* base) {
+    c_.run(base);
+    on_c_.run(base);
+
+    uint32_t now = micros();
+    uint32_t delta = now - last_micros_;
+    last_micros_ = now;
+
+    float fade_delta = delta / 1000.0 / fade_time_millis;
+    if (!base->is_on()) fade_delta = - fade_delta;
+    fade_ = max(0.0, min(1.0, fade_ + fade_delta));
+
+    float current_rpm = rpm * (1 - fade_) + on_rpm * fade_;
+    float current_percentage =
+       percentage * (1 - fade_) + on_percentage * fade_;
+    fade_int_ = (int)(16384 * fade_);
+    pos_ = fract(pos_ + delta / 60000000.0 * current_rpm);
+    float fraction = current_percentage / 100.0;
+    float pos = 0.5 + sin(pos_ * M_PI * 2) * (1.0 - fraction) / 2.0 - fraction / 2.0;
+    num_leds_ = base->num_leds() * 16384;
+    start_ = pos_ * num_leds_;
+    end_ = (pos + fraction) * num_leds_;
+  }
+  OverDriveColor getColor(int led) {
+    led *= 16384;
+    Range led_range(led, led + 16384);
+    int black_mix = 0;
+    if (start_ < end_) {
+      black_mix = (Range(start_, end_) & led_range).size();
+    } else {
+      black_mix = (Range(0, end_) & led_range).size() +
+                  (Range(start_, num_leds_) & led_range).size();
+    }
+    OverDriveColor c = c_.getColor(led);
+    OverDriveColor on_c = on_c_.getColor(led);
+    c.c = c.c.mix2(on_c.c, fade_int_);
+    c.c = Color16().mix2(c.c, black_mix);
+    return c;
+  }
+private:
+  float fade_ = 0.0;
+  int fade_int_;
+  float pos_ = 0.0;
+  uint32_t start_;
+  uint32_t end_;
+  uint32_t num_leds_;
+  COLOR c_;
+  ON_COLOR on_c_;
   uint32_t last_micros_;
 };
 
@@ -6481,7 +6954,10 @@ public:
     if (SaberBase::Lockup()) return;
     // TODO: Pick clash randomly and/or based on strength of clash.
     uint32_t t = millis();
-    if (t - last_clash_ < clash_timeout_) return;
+    if (t - last_clash_ < clash_timeout_) {
+      last_clash_ = t; // Vibration cancellation
+      return;
+    }
     if (Event(BUTTON_NONE, EVENT_CLASH)) {
       clash_timeout_ = 400;  // For events, space clashes out more.
     } else {
@@ -6497,6 +6973,7 @@ public:
       return false;
     }
 #ifdef ENABLE_AUDIO
+    smooth_swing_v2.Deactivate();
     looped_swing_wrapper.Deactivate();
     monophonic_font.Deactivate();
     polyphonic_font.Deactivate();
@@ -6530,7 +7007,15 @@ public:
     }
     if (font) {
       if (swingl.files_found()) {
-        looped_swing_wrapper.Activate(font);
+        smooth_swing_config_file.ReadInCurrentDir("smoothsw.ini");
+	switch (smooth_swing_config_file.Version) {
+	  case 1:
+            looped_swing_wrapper.Activate(font);
+	    break;
+	  case 2:
+            smooth_swing_v2.Activate(font);
+	    break;
+        }
       }
     }
 #endif
@@ -6680,7 +7165,9 @@ public:
 
    bad_blade:
     STDOUT.println("BAD BLADE");
+#ifdef ENABLE_AUDIO
     talkie.Say(spABORT);
+#endif    
   }
 
 
@@ -6689,11 +7176,17 @@ public:
     STDOUT.println(text);
   }
 
+  float peak = 0.0;
+  Vec3 at_peak;
   void SB_Accel(const Vec3& accel) override {
-    if ( (accel_ - accel).len2() >
-         CLASH_THRESHOLD_G * CLASH_THRESHOLD_G) {
+    float v = (accel_ - accel).len2();
+    if (v > CLASH_THRESHOLD_G * CLASH_THRESHOLD_G) {
       // Needs de-bouncing
       Clash();
+    }
+    if (v > peak) {
+      peak = v;
+      at_peak = accel_ - accel;
     }
     accel_ = accel;
     if (monitor.ShouldPrint(Monitoring::MonitorClash)) {
@@ -6702,7 +7195,17 @@ public:
       STDOUT.print(", ");
       STDOUT.print(accel.y);
       STDOUT.print(", ");
-      STDOUT.println(accel.z);
+      STDOUT.print(accel.z);
+      STDOUT.print(" peak ");
+      STDOUT.print(at_peak.x);
+      STDOUT.print(", ");
+      STDOUT.print(at_peak.y);
+      STDOUT.print(", ");
+      STDOUT.print(at_peak.z);
+      STDOUT.print(" (");
+      STDOUT.print(sqrt(peak));
+      STDOUT.println(")");
+      peak = 0.0;
     }
   }
 
@@ -9199,6 +9702,8 @@ protected:
         STDOUT.print(wav_players[i].isPlaying() ? "On" : "Off");
         STDOUT.print(" (eof =  ");
         STDOUT.print(wav_players[i].eof());
+        STDOUT.print(" volume = ");
+        STDOUT.print(wav_players[i].volume());
         STDOUT.println(")");
       }
       return true;
