@@ -24,16 +24,17 @@
 // #define CONFIG_FILE "default_v3_config.h"
 // #define CONFIG_FILE "crossguard_config.h"
 // #define CONFIG_FILE "graflex_v1_config.h"
-#define CONFIG_FILE "owk_v2_config.h"
+// #define CONFIG_FILE "owk_v2_config.h"
 // #define CONFIG_FILE "test_bench_config.h"
 // #define CONFIG_FILE "toy_saber_config.h"
 // #define CONFIG_FILE "new_config.h"
+#define CONFIG_FILE "mysaber_config.h"
 
 #define CONFIG_TOP
 #include CONFIG_FILE
 #undef CONFIG_TOP
 
-// #define ENABLE_DEBUG
+#define ENABLE_DEBUG
 
 //
 // OVERVIEW
@@ -3539,7 +3540,7 @@ public:
     digitalWrite(amplifierPin, HIGH); // turn on the amplifier
     BufferedWavPlayer* player = GetFreeWavPlayer();
     if (player) {
-      player->set_volume_now(config_.volEff / 16.0);
+      player->set_volume_now((float)(config_.volEff / 16.0));
       player->PlayOnce(f);
     }
     return player;

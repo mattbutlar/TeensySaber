@@ -93,7 +93,7 @@ endif
 ifndef AS_NAME
     AS_NAME := $(call PARSE_TEENSY,$(BOARD_TAG),build.command.as)
     ifndef AS_NAME
-        AS_NAME := arm-none-eabi-gcc-as
+        AS_NAME := arm-none-eabi-as
     else
         $(call show_config_variable,AS_NAME,[COMPUTED])
     endif
@@ -120,7 +120,7 @@ endif
 ifndef AR_NAME
     AR_NAME := $(call PARSE_TEENSY,$(BOARD_TAG),build.command.ar)
     ifndef AR_NAME
-        AR_NAME := arm-none-eabi-ar
+        AR_NAME := arm-none-eabi-gcc-ar
     else
         $(call show_config_variable,AR_NAME,[COMPUTED])
     endif
