@@ -55,7 +55,6 @@ set(CMAKE_CXX_COMPILER "${TOOLCHAIN_ROOT}/bin/${TRIPLE}-g++${TOOL_OS_SUFFIX}" CA
 set(CMAKE_AR "${TOOLCHAIN_ROOT}/bin/${TRIPLE}-gcc-ar${TOOL_OS_SUFFIX}" CACHE PATH "archive" FORCE)
 set(CMAKE_OBJCOPY "${TOOLCHAIN_ROOT}/bin/${TRIPLE}-objcopy${TOOL_OS_SUFFIX}" CACHE PATH "objcopy" FORCE)
 set(CMAKE_OBJDUMP "${TOOLCHAIN_ROOT}/bin/${TRIPLE}-objdump${TOOL_OS_SUFFIX}" CACHE PATH "objdump" FORCE)
-set(CMAKE_SIZE "${TOOLCHAIN_ROOT}/bin/${TRIPLE}-size${TOOL_OS_SUFFIX}" CACHE PATH "size" FORCE)
 
 include_directories("${TEENSY_ROOT}")
 
@@ -88,6 +87,4 @@ add_definitions("-DARDUINO=${ARDUINO_VERSION}")
 add_definitions("-DTEENSYDUINO=${TEENSYDUINO_VERSION}")
 add_definitions("-D__${TEENSY_MODEL}__")
 add_definitions(-DLAYOUT_US_ENGLISH)
-add_definitions(-DUSB_VID=null)
-add_definitions(-DUSB_PID=null)
 add_definitions(-MMD)
