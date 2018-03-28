@@ -24,6 +24,7 @@
 #define CONFIG_FILE "config/default_v3_config.h"
 // #define CONFIG_FILE "config/crossguard_config.h"
 // #define CONFIG_FILE "config/graflex_v1_config.h"
+// #define CONFIG_FILE "config/prop_shield_fastled_v1_config.h"
 // #define CONFIG_FILE "config/owk_v2_config.h"
 // #define CONFIG_FILE "config/test_bench_config.h"
 // #define CONFIG_FILE "config/toy_saber_config.h"
@@ -160,7 +161,6 @@
 #endif
 
 #ifdef ENABLE_SNOOZE
-
 #define startup_early_hook DISABLE_startup_early_hook
 #include <Snooze.h>
 #undef startup_early_hook
@@ -237,29 +237,6 @@ public:
   }
 };
 
-#define CHECK_LL(T, START, NEXT) do {                                   \
-  int len = 0;                                                          \
-  for (T* i = START; i; i = i->NEXT) {                                  \
-    if (abs(((long)i) - (long)&START) > 65536) {                        \
-      STDOUT.print("Linked list " #START " has invalid pointer @ ");    \
-      STDOUT.print(__LINE__);                                           \
-      STDOUT.print(" pointer: ");                                       \
-      STDOUT.println((long)i, 16);                                      \
-      START = NULL;                                                     \
-      break;                                                            \
-    }                                                                   \
-    if (++len > 1000) {                                                 \
-      STDOUT.print("Linked list " #START " has become infinite @ ");    \
-      STDOUT.println(__LINE__);                                         \
-      i->NEXT = NULL;                                                   \
-      break;                                                            \
-    }                                                                   \
-  }                                                                     \
-} while(0)
-
-#else
-#define CHECK_LL(T, START, NEXT)
-
 #endif
 
 #include "common/scoped_cycle_counter.h"
@@ -272,9 +249,7 @@ uint64_t loop_cycles = 0;
 
 #define NELEM(X) (sizeof(X)/sizeof((X)[0]))
 
-// Magic type used to prevent linked-list types from automatically linking.
-enum NoLink { NOLINK = 17 };
-
+#include "common/linked_list.h"
 #include "common/looper.h"
 #include "common/command_parser.h"
 #include "common/monitor_helper.h"
@@ -362,55 +337,11 @@ int16_t clamptoi16(int32_t x) {
 #include "sound/talkie.h"
 #include "sound/lightsaber_synth.h"
 
-AudioDynamicMixer<8> dynamic_mixer;
+AudioDynamicMixer<9> dynamic_mixer;
 Beeper beeper;
 Talkie talkie;
 
 // LightSaberSynth saber_synth;
-
-#if 1
-
-// Wanted audio capabilities:
-// Background music (with independent volume)
-// Options:
-// 3 x EFFECT + synthesized HUM&SWING  (teensy style)
-// 3 x EFFECT (wav) + { wav HUM or synthesized hum }  (nec style)
-// HUM/EFFECTS spliced or x-faded (monophonic style)
-
-// This means:
-// 5 x WAV player (read from sdcard or serial flash) + HUM/SWING synthesizer
-// WAV player needs gapless playback and find-cut support.
-
-// Style #1
-//  DAC
-//   +-Dynamic Mixer
-//   |  +-MonophonicFont (on/hum/off/swing/clash/etc.)
-//   |     +-Buffer
-//   |     |  +-WavPlayer
-//   |     +-Buffer
-//   |        +-WavPlayer
-//   +-Buffer (for tracks)
-//      +-WavPlayer
-//
-// Style #2 (superset of style #1)
-//  DAC
-//   +-Dynamic Mixer
-//   |  +-MonophonicFont (on/hum/off)
-//   |     +-Buffer
-//   |     |  +-WavPlayer
-//   |     +-Buffer
-//   |        +-WavPlayer
-//   +-Buffer (for tracks)
-//   |   +-WavPlayer
-//   +-Buffer (other sound fx)
-//   |   +-WavPlayer
-//   +-Buffer (other sound fx)
-//   |   +-WavPlayer
-//   +-Buffer (other sound fx)
-//       +-WavPlayer
-//
-
-#endif
 
 #include "sound/buffered_audio_stream.h"
 
@@ -539,7 +470,7 @@ size_t WhatUnit(class BufferedWavPlayer* player) {
 VolumeOverlay<AudioSplicer> audio_splicer;
 
 void SetupStandardAudioLow() {
-    for (size_t i = 0; i < NELEM(wav_players); i++) {
+  for (size_t i = 0; i < NELEM(wav_players); i++) {
     dynamic_mixer.streams_[i] = wav_players + i;
     wav_players[i].reset_volume();
   }
@@ -702,21 +633,10 @@ private:
 BatteryMonitor battery_monitor;
 
 #include "common/color.h"
+#include "common/range.h"
 #include "blades/monopodws.h"
 #include "blades/blade_base.h"
 #include "blades/blade_wrapper.h"
-
-class StyleFactory {
-public:
-  virtual BladeStyle* make() = 0;
-};
-
-template<class STYLE>
-class StyleFactoryImpl : public StyleFactory {
-  BladeStyle* make() override {
-    return new STYLE();
-  }
-};
 
 class MicroEventTime {
   void SetToNow() { micros_ = micros(); millis_ = millis(); }
@@ -728,26 +648,6 @@ class MicroEventTime {
 private:
   uint32_t millis_;
   uint32_t micros_;
-};
-
-struct OverDriveColor {
-  Color16 c;
-  bool overdrive;
-};
-
-class Range {
-public:
-  uint32_t start;
-  uint32_t end;
-  Range(uint32_t s, uint32_t e) : start(s), end(e) {}
-  uint32_t size() const {
-    if (start >= end) return 0;
-    return end - start;
-  }
-  Range operator&(const Range& other) {
-    return Range(max(start, other.start),
-                 min(end, other.end));
-  }
 };
 
 template<class T, class U>
@@ -918,41 +818,6 @@ struct BladeConfig {
 #undef CONFIG_PRESETS
 
 
-#if 0
-class Script : Looper, StateMachine {
-public:
-  const char* name() override { return "Script"; }
-  void Loop() override {
-    STATE_MACHINE_BEGIN();
-    SLEEP(2000);
-    CommandParser::DoParse("on", NULL);
-    SLEEP(2000);
-    CommandParser::DoParse("batt", NULL);
-    SLEEP(2000);
-    CommandParser::DoParse("play", "cantina.wav");
-#if 0    
-    while (true) {
-      if (dac.isSilent()) {
-        SLEEP(2000);
-      } else {
-        CommandParser::DoParse("clash", NULL);
-        STDOUT.print("alloced: ");
-        STDOUT.println(mallinfo().uordblks);
-        SLEEP(100);
-      }
-    }
-#endif    
-    STATE_MACHINE_END();
-  }
-  void Run() {
-    state_machine_.reset_state_machine();
-    run_ = true;
-  }
-  bool run_ = false;
-};
-
-Script script;
-#endif
 
 // The Saber class implements the basic states and actions
 // for the saber.
@@ -1180,7 +1045,8 @@ public:
    bad_blade:
     STDOUT.println("BAD BLADE");
 #ifdef ENABLE_AUDIO
-    talkie.Say(spABORT);
+    talkie.Say(talkie_error_in_15, 15);
+    talkie.Say(talkie_blade_array_15, 15);
 #endif    
   }
 
@@ -1360,8 +1226,7 @@ protected:
           STDOUT.println("Battery low beep");
 #ifdef ENABLE_AUDIO
           // TODO: allow this to be replaced with WAV file
-          talkie.Say(spLOW);
-          talkie.Say(spPOWER);
+          talkie.Say(talkie_low_battery_15, 15);
 #endif
 	  last_beep_ = millis();
         }
@@ -1652,12 +1517,6 @@ public:
       }
       return true;
     }
-    if (!strcmp(cmd, "say")) {
-      talkie.Say(spBANK);
-      talkie.Say(spOPEN);
-      talkie.Say(spFAILURE);
-      return true;
-    }
     if (!strcmp(cmd, "volumes")) {
       for (size_t unit = 0; unit < NELEM(wav_players); unit++) {
         STDOUT.print(" Unit ");
@@ -1815,6 +1674,52 @@ private:
 
 Saber saber;
 
+#if 0
+class Script : Looper, StateMachine {
+public:
+  const char* name() override { return "Script"; }
+  void Loop() override {
+    STATE_MACHINE_BEGIN();
+    SLEEP(2000);
+    if (fabs(saber.id() - 125812.5f) > 22687.0f) {
+      STDOUT.println("ID IS WRONG!!!");
+      beeper.Beep(0.5, 2000.0);
+      SLEEP(1000);
+      beeper.Beep(0.5, 2000.0);
+      SLEEP(1000);
+      beeper.Beep(0.5, 2000.0);
+      SLEEP(1000);
+    }
+    CommandParser::DoParse("on", NULL);
+    SLEEP(1000);
+    CommandParser::DoParse("batt", NULL);
+    SLEEP(2000);
+    CommandParser::DoParse("play", "cantina.wav");
+#if 0    
+    while (true) {
+      if (dac.isSilent()) {
+        SLEEP(2000);
+      } else {
+        CommandParser::DoParse("clash", NULL);
+        STDOUT.print("alloced: ");
+        STDOUT.println(mallinfo().uordblks);
+        SLEEP(100);
+      }
+    }
+#endif    
+    STATE_MACHINE_END();
+  }
+  void Run() {
+    state_machine_.reset_state_machine();
+    run_ = true;
+  }
+  bool run_ = false;
+};
+
+Script script;
+#endif
+
+
 #include "buttons/latching_button.h"
 #include "buttons/button.h"
 #include "buttons/touchbutton.h"
@@ -1827,7 +1732,6 @@ class Commands : public CommandParser {
  public:
   bool Parse(const char* cmd, const char* e) override {
     if (!strcmp(cmd, "help")) {
-      // STDOUT.println("  red, green, blue, yellow, cyan, magenta, white");
       CommandParser::DoHelp();
       return true;
     }
@@ -2154,25 +2058,51 @@ public:
       while (SA::Connected()) {
         while (!SA::stream().available()) YIELD();
         int c = SA::stream().read();
-        if (c < 0) { len_ = 0; break; }
+        if (c < 0) { break; }
 #if 0
         if (monitor.IsMonitoring(Monitoring::MonitorSerial) &&
             default_output != &SA::stream()) {
-          default_output->print("SER: ");
+	  default_output->print("SER: ");
           default_output->println(c, HEX);
         }
 #endif  
-        if (c == '\n') { ParseLine(); len_ = 0; continue; }
+        if (c == '\n') {
+	  if (cmd_) ParseLine();
+	  len_ = 0;
+	  space_ = 0;
+	  free(cmd_);
+          cmd_ = nullptr;
+	  continue;
+	}
+	if (len_ + 1 >= space_) {
+	  int new_space = space_ * 3 / 2 + 8;
+	  char* tmp = (char*)realloc(cmd_, new_space);
+	  if (tmp) {
+	    space_ = new_space;
+	    cmd_ = tmp;
+	  } else {
+	    STDOUT.println("Line too long.");
+	    len_ = 0;
+	    space_ = 0;
+	    free(cmd_);
+            cmd_ = nullptr;
+	    continue;
+	  }
+	}
         cmd_[len_] = c;
         cmd_[len_ + 1] = 0;
-        if (len_ + 1 < (int)sizeof(cmd_)) len_++;
+	len_++;
       }
+      len_ = 0;
+      space_ = 0;
+      free(cmd_);
+      cmd_ = nullptr;
     }
     STATE_MACHINE_END();
   }
 
   void ParseLine() {
-    if (len_ == 0 || len_ == (int)sizeof(cmd_)) return;
+    if (len_ == 0) return;
     while (len_ > 0 && (cmd_[len_-1] == '\r' || cmd_[len_-1] == ' ')) {
       len_--;
       cmd_[len_] = 0;
@@ -2215,8 +2145,9 @@ public:
   }
 
 private:
-  int len_;
-  char cmd_[256];
+  int len_ = 0;
+  char* cmd_ = nullptr;
+  int space_ = 0;
 };
 
 Parser<SerialAdapter> parser;
@@ -2535,11 +2466,8 @@ void setup() {
 #if defined(ENABLE_SD) && defined(ENABLE_AUDIO)
   if (!sd_card_found) {
     digitalWrite(amplifierPin, HIGH); // turn on the amplifier
-    talkie.Say(spPLEASE);
-    talkie.Say(spCONNECT);
-    talkie.Say(spS);
-    talkie.Say(spD);
-    talkie.Say(spUNIT);
+    talkie.Say(talkie_sd_card_15, 15);
+    talkie.Say(talkie_not_found_15, 15);
   }
 #endif // ENABLE_AUDIO && ENABLE_SD
 }

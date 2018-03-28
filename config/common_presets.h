@@ -1,3 +1,10 @@
+// If you have multiple sabers that use the same blade connector, and your
+// blades use blade ID resistors, you will probably want to share your blades[]
+// and preset[] arrays between all your sabers. This file is an example of
+// how to do that. My recommendation is to make a copy of this file, edit it
+// for your purposes, and then include it from your config file.
+// See "graflex_v1_config.h" and "owk_v2_config.h" for examples of how I do this.
+
 #ifdef CONFIG_PRESETS
 
 // CONFIGURABLE
@@ -35,7 +42,9 @@ Preset presets[] = {
     StyleNormalPtr<Pulsing<RED, Rgb<50,0,0>, 5000>, WHITE, 300, 800, RED>(), "pulsing" },
   { "font02", "tracks/cantina.wav", StyleRainbowPtr<300, 800>(), "rainbow" },
   { "font02", "tracks/cantina.wav", StyleStrobePtr<WHITE, Rainbow, 15, 300, 800>(), "strobe" },
+#ifdef ENABLE_WS2811
   { "font02", "tracks/cantina.wav", &style_pov, "POV" },
+#endif
 
   { "charging", "tracks/duel.wav", &style_charging, "battery" },
 };
