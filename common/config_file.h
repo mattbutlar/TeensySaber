@@ -1,29 +1,31 @@
 #ifndef COMMON_CONFIG_FILE_H
 #define COMMON_CONFIG_FILE_H
 
+#include "file_reader.h"
+
 // Reads an config file, looking for variable assignments.
+// TODO(hubbe): Read config files from serialflash.
 struct ConfigFile {
-#ifdef ENABLE_SD
-  void skipwhite(File* f) {
-    while (f->peek() == ' ' || f->peek() == '\t')
-      f->read();
+  void skipwhite(FileReader* f) {
+    while (f->Peek() == ' ' || f->Peek() == '\t')
+      f->Read();
   }
-  void skipline(File* f) {
-    while (f->available() && f->read() != '\n');
+  void skipline(FileReader* f) {
+    while (f->Available() && f->Read() != '\n');
   }
 
-  int64_t readIntValue(File* f) {
+  int64_t readIntValue(FileReader* f) {
     int64_t ret = 0;
     int64_t sign = 1;
-    if (f->peek() == '-') {
+    if (f->Peek() == '-') {
       sign = -1;
-      f->read();
+      f->Read();
     }
-    while (f->available()) {
-      int c = toLower(f->peek());
+    while (f->Available()) {
+      int c = toLower(f->Peek());
       if (c >= '0' && c <= '9') {
         ret = (c - '0') + 10 * ret;
-        f->read();
+        f->Read();
       } else {
         return ret * sign;
       }
@@ -31,16 +33,16 @@ struct ConfigFile {
     return ret * sign;
   }
 
-  float readFloatValue(File* f) {
+  float readFloatValue(FileReader* f) {
     float ret = 0.0;
     float sign = 1.0;
     float mult = 1.0;
-    if (f->peek() == '-') {
+    if (f->Peek() == '-') {
       sign = -1.0;
-      f->read();
+      f->Read();
     }
-    while (f->available()) {
-      int c = toLower(f->peek());
+    while (f->Available()) {
+      int c = toLower(f->Peek());
       if (c >= '0' && c <= '9') {
         if (mult == 1.0) {
           ret = (c - '0') + 10 * ret;
@@ -48,12 +50,12 @@ struct ConfigFile {
           ret += (c - '0') * mult;
           mult /= 10.0;
         }
-        f->read();
+        f->Read();
       } else if (c == '.') {
         if (mult != 1.0) return ret * sign;
         // Time to read decimals.
         mult /= 10.0;
-        f->read();
+        f->Read();
       } else {
         return ret * sign;
       }
@@ -61,17 +63,18 @@ struct ConfigFile {
     return ret * sign;
   }
 
-  void Read(File* f) {
+  void Read(FileReader* f) {
     SetVariable("=", 0.0);  // This resets all variables.
-    for (; f->available(); skipline(f)) {
+    if (!f || !f->IsOpen()) return;
+    for (; f->Available(); skipline(f)) {
       char variable[33];
       variable[0] = 0;
       skipwhite(f);
-      if (f->peek() == '#') continue;
+      if (f->Peek() == '#') continue;
       for (int i = 0; i < 32; i++) {
-        int c = toLower(f->peek());
+        int c = toLower(f->Peek());
         if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
-          f->read();
+          f->Read();
           variable[i] = c;
           variable[i+1] = 0;
         } else {
@@ -79,8 +82,8 @@ struct ConfigFile {
         }
       }
       skipwhite(f);
-      if (f->peek() != '=') continue;
-      f->read();
+      if (f->Peek() != '=') continue;
+      f->Read();
       skipwhite(f);
       float v = readFloatValue(f);
 #if 0
@@ -92,15 +95,14 @@ struct ConfigFile {
       SetVariable(variable, v);
     }
   }
-#endif
+
   virtual void SetVariable(const char* variable, float v) = 0;
 
   void Read(const char *filename) {
-#ifdef ENABLE_SD
-    File f = LSFS::Open(filename);
+    FileReader f;
+    f.Open(filename);
     Read(&f);
-    f.close();
-#endif
+    f.Close();
   }
 
 #define CONFIG_VARIABLE(X, DEF) do {            \

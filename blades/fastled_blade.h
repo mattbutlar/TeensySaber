@@ -3,6 +3,8 @@
 
 #ifdef ENABLE_FASTLED
 
+// Needed for "displayMemory"
+#include "monopodws.h"
 #include <FastLED.h>
 
 // FASTLED-type blade implementation.
@@ -38,7 +40,7 @@ public:
       digitalWrite(spiLedSelect, LOW);
       SPI.endTransaction();   // allow other libs to use SPI again
     } else {
-      // Bitbang on separate pins, need to lock anything.
+      // Bitbang on separate pins, no need to lock anything.
       FastLED.show();
     }
   }
@@ -49,7 +51,7 @@ public:
     STDOUT.print("FASTLED Blade with ");
     STDOUT.print(num_leds_);
     STDOUT.println(" leds");
-    FastLED.addLeds<CHIPSET, spiLedDataOut, spiLedClock, EOrder, SPI_DATA_RATE>((struct CRGB*)displayMemory, num_leds_);
+    FastLED.addLeds<CHIPSET, spiLedDataOut, spiLedClock, RGB_ORDER, SPI_DATA_RATE>((struct CRGB*)displayMemory, num_leds_);
     power_->Init();
     Power(true);
     delay(10);
@@ -68,8 +70,8 @@ public:
   bool is_on() const override {
     return on_;
   }
-  void set(int led, Color c) override {
-    ((Color8*)displayMemory)[led] = c;
+  void set(int led, Color16 c) override {
+    ((Color8*)displayMemory)[led] = c.dither(0);
   }
   bool clash() override {
     bool ret = clash_;
@@ -125,7 +127,7 @@ protected:
       loop_counter_.Reset();
       return;
     }
-    int m = millis();
+    uint32_t m = millis();
     // This limits the blade to 1000 updates per second, which
     // may not be enough for POV-style things, but I suspect
     // than running it at full speed will cause sound problems.

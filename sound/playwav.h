@@ -1,6 +1,10 @@
 #ifndef SOUND_PLAYWAV_H
 #define SOUND_PLAYWAV_H
 
+#include "../common/file_reader.h"
+#include "../common/state_machine.h"
+#include "audiostream.h"
+
 // Simple upsampler code, doubles the number of samples with
 // 2-lobe lanczos upsampling.
 #define C1 24757
@@ -161,75 +165,8 @@ private:
     else if (bits_ == 32) DecodeBytes2<32>();
   }
 
-  int ReadFile(int n) {
-#ifdef ENABLE_SERIALFLASH
-    if (sf_file_) {
-      return sf_file_.read(buffer + 8, n);
-    }
-#endif
-#ifdef ENABLE_SD
-    return sd_file_.read(buffer + 8, n);
-#else
-    return 0;
-#endif
-  }
 
-  void Skip(int n) {
-#ifdef ENABLE_SERIALFLASH
-    if (sf_file_) {
-      sf_file_.seek(sf_file_.position() + n);
-      return;
-    }
-#endif
-#ifdef ENABLE_SD
-    sd_file_.seek(sd_file_.position() + n);
-#endif
-  }
-
-  void Rewind() {
-#ifdef ENABLE_SERIALFLASH
-    if (sf_file_) {
-      sf_file_.seek(0);
-      return;
-    }
-#endif
-#ifdef ENABLE_SD
-    sd_file_.seek(0);
-#endif
-  }
-
-  uint32_t Tell() {
-#ifdef ENABLE_SERIALFLASH
-    if (sf_file_) return sf_file_.position();
-#endif
-#ifdef ENABLE_SD
-    return sd_file_.position();
-#endif
-    return 0;
-  }
-
-  uint32_t FileSize() {
-#ifdef ENABLE_SERIALFLASH
-    if (sf_file_) return sf_file_.size();
-#endif
-#ifdef ENABLE_SD
-    return sd_file_.size();
-#endif
-    return 0;
-  }
-
-  int AlignRead(int n) {
-#ifdef ENABLE_SERIALFLASH
-    if (sf_file_) return n;
-#endif
-#ifdef ENABLE_SD
-    int next_block = (sd_file_.position() + 512u) & ~511u;
-    int bytes_to_end_of_block = next_block - sd_file_.position();
-    return min(n, bytes_to_end_of_block);
-#else
-    return n;
-#endif
-  }
+  int ReadFile(int n) { return file_.Read(buffer + 8, n); }
 
   void loop() {
     STATE_MACHINE_BEGIN();
@@ -245,26 +182,15 @@ private:
       if (new_file_id_ && new_file_id_ == old_file_id_) {
         // Minor optimization: If we're reading the same file
         // as before, then seek to 0 instead of open/close file.
-        Rewind();
+        file_.Rewind();
       } else {
-#ifdef ENABLE_SERIALFLASH
-        sf_file_ = SerialFlashChip::open(filename_);
-        if (!sf_file_)
-#endif
-        {
-#ifdef ENABLE_SD
-          sd_file_.close();
-          sd_file_ = LSFS::Open(filename_);
-          YIELD();
-          if (!sd_file_)
-#endif
-          {
-            STDOUT.print("File ");
-            STDOUT.print(filename_);
-            STDOUT.println(" not found.");
-            goto fail;
-          }
-        }
+	if (!file_.Open(filename_)) {
+	  STDOUT.print("File ");
+	  STDOUT.print(filename_);
+	  STDOUT.println(" not found.");
+	  goto fail;
+	}
+	YIELD();
         old_file_id_ = new_file_id_;
       }
       wav_ = endswith(".wav", filename_);
@@ -288,7 +214,7 @@ private:
 
           len_ = header(1);
           if (header(0) != 0x20746D66) {  // 'fmt '
-            Skip(len_);
+            file_.Skip(len_);
             continue;
           }
           if (len_ < 16) {
@@ -302,7 +228,7 @@ private:
           STDOUT.println("Read failed.");
           goto fail;
         }
-        if (len_ > 16) Skip(len_ - 16);
+        if (len_ > 16) file_.Skip(len_ - 16);
         if ((header(0) & 0xffff) != 1) {
           STDOUT.println("Wrong format.");
           goto fail;
@@ -330,26 +256,26 @@ private:
           if (ReadFile(8) != 8) break;
           len_ = header(1);
           if (header(0) != 0x61746164) {
-            Skip(len_);
+            file_.Skip(len_);
             continue;
           }
         } else {
-          if (Tell() >= FileSize()) break;
-          len_ = FileSize() - Tell();
+          if (file_.Tell() >= file_.FileSize()) break;
+          len_ = file_.FileSize() - file_.Tell();
         }
         sample_bytes_ = len_;
 
         if (start_ != 0.0) {
           int samples = fmod(start_, length()) * rate_;
           int bytes_to_skip = samples * channels_ * bits_ / 8;
-          Skip(bytes_to_skip);
+          file_.Skip(bytes_to_skip);
           len_ -= bytes_to_skip;
           start_ = 0.0;
         }
 
         while (len_) {
           {
-            int bytes_read = ReadFile(AlignRead(min(len_, 512u)));
+            int bytes_read = ReadFile(file_.AlignRead(min(len_, 512u)));
             if (bytes_read == 0)
               break;
             len_ -= bytes_read;
@@ -416,12 +342,6 @@ private:
   Effect::FileID new_file_id_;
   Effect::FileID old_file_id_;
   char filename_[128];
-#ifdef ENABLE_SD
-  File sd_file_;
-#endif
-#ifdef ENABLE_SERIALFLASH
-  SerialFlashFile sf_file_;
-#endif
   int16_t* dest_ = nullptr;
   int to_read_ = 0;
   int tmp_;
@@ -432,6 +352,8 @@ private:
   uint8_t bits_;
 
   bool wav_;
+
+  FileReader file_;
 
   size_t len_ = 0;
   volatile size_t sample_bytes_ = 0;
